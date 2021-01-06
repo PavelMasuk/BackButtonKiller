@@ -12,3 +12,7 @@
 /captures
 .externalNativeBuild
 .cxx
+
+app/local.properties
+
+.idea/dictionaries/
