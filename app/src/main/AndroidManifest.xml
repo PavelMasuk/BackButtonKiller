@@ -2,7 +2,6 @@
     xmlns:tools="http://schemas.android.com/tools"
     package="com.example.myfirstxposedmodule">
 
-    <!-- Allows access to the flashlight -->
     <permission android:name="android.permission.FLASHLIGHT" />
 
     <application
@@ -22,7 +21,5 @@
         <meta-data
             android:name="xposedminversion"
             android:value="82" />
-
     </application>
-
 </manifest>
