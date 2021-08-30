@@ -1,5 +1,6 @@
 package com.example.myfirstxposedmodule;
 
+import android.animation.ValueAnimator;
 import android.annotation.SuppressLint;
 import android.app.ActivityManager;
 import android.content.ComponentName;
@@ -7,9 +8,15 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
-import android.view.HapticFeedbackConstants;
+import android.content.res.Configuration;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Point;
+import android.os.VibrationEffect;
+import android.util.Log;
 import android.view.MotionEvent;
-import android.view.ViewGroup;
+import android.view.View;
+import android.view.WindowManager;
 import android.widget.Toast;
 
 import java.util.List;
@@ -18,15 +25,29 @@ import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
-import de.robv.android.xposed.callbacks.XCallback;
 
-//import android.media.AudioManager;
+import static com.example.myfirstxposedmodule.Classes.EdgeBackGestureHandler;
+import static com.example.myfirstxposedmodule.Classes.ModPackageName;
+import static com.example.myfirstxposedmodule.Classes.NavigationBarEdgePanel;
 
 public class MyModule implements IXposedHookLoadPackage {
+    private static boolean initialized = false;
+
+    private static int screenWidth;
+    private static int screenHeight;
+
     private static boolean didReachCenter = false;
     private static boolean didVibrate = false;
     private static boolean startFromLeft = false;
     private static boolean triggerBack = true;
+    private static int backupArrowColor;
+    private static Object vibrationHelper;
+    private static ValueAnimator arrowColorAnimator;
+
+    @SuppressLint("StaticFieldLeak")
+    private static View navBarEdgePanel;
+    @SuppressLint("StaticFieldLeak")
+    static Context context;
 
 //
 //    private static final int mKillDelay = 300;
@@ -37,19 +58,12 @@ public class MyModule implements IXposedHookLoadPackage {
 //    private static final String CLASS_IWINDOW_MANAGER = "android.view.IWindowManager";
 //    private static final String CLASS_PHONE_WINDOW_MANAGER = "com.android.server.policy.PhoneWindowManager";
 
-    @SuppressLint("StaticFieldLeak")
-    static Context mContext;
 //    private static Object mPhoneWindowManager;
 //    private static PowerManager mPowerManager;
     //    private static AudioManager mAudioManager;
 //    private static PowerManager.WakeLock mWakeLock;
-
-    //    private static boolean firstRun = true;
 //    private static boolean mPowerLongPressInterceptedByTorch;
 //    private static boolean mTorchStatus;
-
-    @SuppressLint("StaticFieldLeak")
-    private static ViewGroup mStatusBarView;
 
 //    private static final Runnable mBackLongPress = () -> {
 //        killForegroundApp();
@@ -80,10 +94,6 @@ public class MyModule implements IXposedHookLoadPackage {
 //        }
 //    };
 
-    private static ActivityManager getActivityManager() {
-        return (ActivityManager) mContext.getSystemService(Context.ACTIVITY_SERVICE);
-    }
-
 //    private static PowerManager getPowerManager() {
 //        if (mPowerManager == null)
 //            mPowerManager = (PowerManager) mContext.getSystemService(Context.POWER_SERVICE);
@@ -102,15 +112,15 @@ public class MyModule implements IXposedHookLoadPackage {
 
     private static void killForegroundApp() {
         final Intent intent = new Intent(Intent.ACTION_MAIN);
-        final PackageManager pm = mContext.getPackageManager();
+        final PackageManager packageManager = context.getPackageManager();
         String defaultHomePackage = "com.android.launcher";
         intent.addCategory(Intent.CATEGORY_HOME);
-        final ResolveInfo res = pm.resolveActivity(intent, 0);
+        final ResolveInfo res = packageManager.resolveActivity(intent, 0);
         if (res.activityInfo != null && !res.activityInfo.packageName.equals("android"))
             defaultHomePackage = res.activityInfo.packageName;
-        ActivityManager am = getActivityManager();
+        ActivityManager activityManager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
         //noinspection deprecation
-        List<ActivityManager.RunningTaskInfo> apps = am.getRunningTasks(1);
+        List<ActivityManager.RunningTaskInfo> apps = activityManager.getRunningTasks(1);
 
         String targetKilled = null;
         if (apps.size() > 0) {
@@ -118,21 +128,20 @@ public class MyModule implements IXposedHookLoadPackage {
             if (!cn.getPackageName().equals("com.android.systemui") && !cn.getPackageName().startsWith(defaultHomePackage)) {
                 targetKilled = cn.getPackageName();
                 try {
-                    Object service = XposedHelpers.callMethod(am, "getService");
-                    //noinspection deprecation
-                    XposedHelpers.callMethod(service, "removeTask", apps.get(0).id);
+                    Object service = XposedHelpers.callMethod(activityManager, "getService");
+                    XposedHelpers.callMethod(service, "removeTask", apps.get(0).taskId);
                 } catch (Throwable ignore) {
                 }
             }
         }
         if (targetKilled != null) {
             try {
-                targetKilled = (String) pm.getApplicationLabel(pm.getApplicationInfo(targetKilled, 0));
+                targetKilled = (String) packageManager.getApplicationLabel(packageManager.getApplicationInfo(targetKilled, 0));
             } catch (PackageManager.NameNotFoundException ignored) {
             }
-            Toast.makeText(mContext, targetKilled + " killed", Toast.LENGTH_SHORT).show();
+            Toast.makeText(context, targetKilled + " killed", Toast.LENGTH_SHORT).show();
         } else
-            Toast.makeText(mContext, "Nothing to kill", Toast.LENGTH_SHORT).show();
+            Toast.makeText(context, "Nothing to kill", Toast.LENGTH_SHORT).show();
     }
 
 //    private static void toggleTorch() {
@@ -152,6 +161,7 @@ public class MyModule implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
+
 //        if (lpparam.packageName.equals("android") || lpparam.processName.equals("android")) {
 //
 //            Class<?> mPhoneWindowManagerClass = XposedHelpers.findClass(CLASS_PHONE_WINDOW_MANAGER, lpparam.classLoader);
@@ -214,76 +224,102 @@ public class MyModule implements IXposedHookLoadPackage {
 //                        }
 //                    });
 //        }
-        if (lpparam.packageName.equals("com.android.systemui") || lpparam.processName.equals("com.android.systemui")) {
-            final Class<?> statusBarClass = XposedHelpers.findClass("com.android.systemui.statusbar.phone.StatusBar", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod("com.android.systemui.statusbar.phone.PhoneStatusBarView", lpparam.classLoader,
-                    "setBar", statusBarClass, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            mStatusBarView = (ViewGroup) param.thisObject;
-                        }
-                    });
 
-            XposedHelpers.findAndHookMethod("com.android.systemui.statusbar.phone.NavigationBarEdgePanel", lpparam.classLoader,
-                    "handleMoveEvent", MotionEvent.class, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            triggerBack = (boolean) XposedHelpers.getObjectField(param.thisObject, "mTriggerBack");
-                        }
-                    });
+        if (lpparam.packageName.equals(ModPackageName) && !initialized) {
+            Classes.initClasses(lpparam.classLoader);
+            initBackGestureMod();
+        }
+    }
 
-            Class<?> EdgeBackGestureHandler = XposedHelpers.findClass("com.android.systemui.statusbar.phone.EdgeBackGestureHandler", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(EdgeBackGestureHandler, "onMotionEvent", MotionEvent.class, new XC_MethodHook(XCallback.PRIORITY_HIGHEST) {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    MotionEvent ev = (MotionEvent) param.args[0];
-                    boolean mAllowGesture = (boolean) XposedHelpers.getObjectField(param.thisObject, "mAllowGesture");
-                    if (ev.getAction() == MotionEvent.ACTION_DOWN) {
-                        startFromLeft = ev.getX() < 540;
+    private static void initBackGestureMod() {
+        XposedHelpers.findAndHookMethod(NavigationBarEdgePanel, "handleMoveEvent", MotionEvent.class, new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                navBarEdgePanel = (View) param.thisObject;
+                vibrationHelper = XposedHelpers.getObjectField(param.thisObject, "mVibratorHelper");
+                triggerBack = (boolean) XposedHelpers.getObjectField(param.thisObject, "mTriggerBack");
+                arrowColorAnimator = (ValueAnimator) XposedHelpers.getObjectField(param.thisObject, "mArrowColorAnimator");
+            }
+        });
+
+        XposedHelpers.findAndHookMethod(NavigationBarEdgePanel, "updateIsDark", boolean.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (didReachCenter)
+                    param.setResult(0);
+            }
+        });
+
+        XposedHelpers.findAndHookMethod(EdgeBackGestureHandler, "onMotionEvent", MotionEvent.class, new XC_MethodHook() {
+            @SuppressWarnings("IntegerDivisionInFloatingPointContext")
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                MotionEvent event = (MotionEvent) param.args[0];
+                if (context == null) {
+                    context = (Context) XposedHelpers.getObjectField(param.thisObject, "mContext");
+                    Point size = new Point();
+                    ((WindowManager) context.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay().getRealSize(size);
+                    screenWidth = Math.min(size.x, size.y);
+                    screenHeight = Math.max(size.x, size.y);
+                }
+                boolean mAllowGesture = (boolean) XposedHelpers.getObjectField(param.thisObject, "mAllowGesture");
+                int orientation = context.getResources().getConfiguration().orientation;
+                int currentWidth = orientation == Configuration.ORIENTATION_PORTRAIT ? screenWidth : screenHeight;
+                int divider = orientation == Configuration.ORIENTATION_PORTRAIT ? 2 : 3;
+                int threshold = currentWidth / divider;
+
+                if (event.getAction() == MotionEvent.ACTION_DOWN)
+                    startFromLeft = event.getX() < currentWidth / 2;
+
+                if (event.getAction() == MotionEvent.ACTION_MOVE && mAllowGesture) {
+                    boolean condition = startFromLeft ? event.getX() > threshold : event.getX() < currentWidth - threshold;
+                    if (condition && !didReachCenter) {
+                        didReachCenter = true;
+                        changeColor();
+                        if (!didVibrate) {
+                            vibrate();
+                            didVibrate = true;
+                        }
                     }
-                    if (ev.getAction() == MotionEvent.ACTION_MOVE && mAllowGesture) {
-                        if (ev.getX() < 540 && !didReachCenter && !startFromLeft) {
-                            didReachCenter = true;
-                            if (!didVibrate) {
-                                haptic2();
-                                didVibrate = true;
-                            }
-                        }
-                        if (ev.getX() > 540 && didReachCenter && !startFromLeft) {
-                            didReachCenter = false;
-//                            haptic2();
-                        }
-                        if (ev.getX() > 540 && !didReachCenter && startFromLeft) {
-                            didReachCenter = true;
-                            if (!didVibrate) {
-                                haptic2();
-                                didVibrate = true;
-                            }
-                        }
-                        if (ev.getX() < 540 && didReachCenter && startFromLeft) {
-                            didReachCenter = false;
-//                            haptic2();
-                        }
-                    }
-                    if (ev.getAction() == MotionEvent.ACTION_UP)
-                        didVibrate = false;
-                    if (ev.getAction() == MotionEvent.ACTION_UP && didReachCenter) {
+                    if (!condition && didReachCenter) {
                         didReachCenter = false;
-                        didVibrate = false;
-                        mContext = (Context) XposedHelpers.getObjectField(param.thisObject, "mContext");
-//                        param.setResult(0);
+                        revertColor();
+                    }
+                }
+
+                if (event.getAction() == MotionEvent.ACTION_UP) {
+                    didVibrate = false;
+                    if (didReachCenter) {
                         if (triggerBack)
                             killForegroundApp();
                         else
                             triggerBack = true;
+                        didReachCenter = false;
                     }
                 }
-            });
-        }
+            }
+        });
+
+        initialized = true;
     }
 
-    private static void haptic2() {
-        XposedHelpers.callMethod(mStatusBarView, "performHapticFeedback",
-                HapticFeedbackConstants.LONG_PRESS);
+    private static void changeColor() {
+        backupArrowColor = (int) XposedHelpers.getIntField(navBarEdgePanel, "mCurrentArrowColor");
+        setArrowColor(Color.RED);
+    }
+
+    private static void revertColor() {
+        setArrowColor(backupArrowColor);
+    }
+
+    private static void setArrowColor(int color) {
+        arrowColorAnimator.cancel();
+        XposedHelpers.setIntField(navBarEdgePanel, "mCurrentArrowColor", color);
+        ((Paint) XposedHelpers.getObjectField(navBarEdgePanel, "mPaint")).setColor(color);
+        navBarEdgePanel.invalidate();
+    }
+
+    private static void vibrate() {
+        XposedHelpers.callMethod(vibrationHelper, "vibrate", VibrationEffect.EFFECT_TICK);
     }
 }
